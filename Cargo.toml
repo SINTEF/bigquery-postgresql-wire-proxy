@@ -1,0 +1,15 @@
+[package]
+name = "bigquery-postgresql-wire-proxy"
+description = "A PostgreSQL wire protocol proxy server for BigQuery."
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+keywords = ["bigquery", "postgresql", "wire-protocol", "server"]
+
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1.36", features = ["full"] }
+pgwire = "0.19"
+gcp-bigquery-client = "0.18"
+anyhow = "1.0"
