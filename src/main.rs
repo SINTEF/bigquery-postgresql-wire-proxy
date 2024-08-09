@@ -2,9 +2,11 @@ use async_trait::async_trait;
 use futures::{stream, Sink, SinkExt};
 use gcp_bigquery_client::model::query_request::QueryRequest;
 use pgwire::api::auth::noop::NoopStartupHandler;
+use pgwire::api::copy::NoopCopyHandler;
 use pgwire::api::query::{PlaceholderExtendedQueryHandler, SimpleQueryHandler};
 use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response};
-use pgwire::api::{ClientInfo, MakeHandler, StatelessMakeHandler, Type};
+use pgwire::api::PgWireHandlerFactory;
+use pgwire::api::{ClientInfo, Type};
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use pgwire::messages::response::ErrorResponse;
 use pgwire::messages::PgWireBackendMessage;
@@ -83,6 +85,33 @@ impl SimpleQueryHandler for BigQueryProcessor {
     }
 }
 
+struct BigQueryProcessorFactory {
+    handler: Arc<BigQueryProcessor>,
+}
+
+impl PgWireHandlerFactory for BigQueryProcessorFactory {
+    type StartupHandler = NoopStartupHandler;
+    type SimpleQueryHandler = BigQueryProcessor;
+    type ExtendedQueryHandler = PlaceholderExtendedQueryHandler;
+    type CopyHandler = NoopCopyHandler;
+
+    fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
+        self.handler.clone()
+    }
+
+    fn extended_query_handler(&self) -> Arc<Self::ExtendedQueryHandler> {
+        Arc::new(PlaceholderExtendedQueryHandler)
+    }
+
+    fn startup_handler(&self) -> Arc<Self::StartupHandler> {
+        Arc::new(NoopStartupHandler)
+    }
+
+    fn copy_handler(&self) -> Arc<Self::CopyHandler> {
+        Arc::new(NoopCopyHandler)
+    }
+}
+
 #[tokio::main]
 pub async fn main() -> Result<(), anyhow::Error> {
     // Read configuration parameters from environment variables
@@ -93,33 +122,20 @@ pub async fn main() -> Result<(), anyhow::Error> {
     // Init BigQuery client
     let client = gcp_bigquery_client::Client::from_service_account_key_file(&gcp_sa_key).await?;
 
-    let processor = Arc::new(StatelessMakeHandler::new(Arc::new(BigQueryProcessor {
-        client: Arc::new(client),
-        project_id: project_id.clone(),
-    })));
-    // We have not implemented extended query in this server, use placeholder instead
-    let placeholder = Arc::new(StatelessMakeHandler::new(Arc::new(
-        PlaceholderExtendedQueryHandler,
-    )));
-    let authenticator = Arc::new(StatelessMakeHandler::new(Arc::new(NoopStartupHandler)));
+    let factory = Arc::new(BigQueryProcessorFactory {
+        handler: Arc::new(BigQueryProcessor {
+            client: Arc::new(client),
+            project_id: project_id.clone(),
+        }),
+    });
 
     let server_addr = "127.0.0.1:5432";
     let listener = TcpListener::bind(server_addr).await.unwrap();
     println!("Listening to {}", server_addr);
     loop {
         let incoming_socket = listener.accept().await.unwrap();
-        let authenticator_ref = authenticator.make();
-        let processor_ref = processor.make();
-        let placeholder_ref = placeholder.make();
-        tokio::spawn(async move {
-            process_socket(
-                incoming_socket.0,
-                None,
-                authenticator_ref,
-                processor_ref,
-                placeholder_ref,
-            )
-            .await
-        });
+        let factory_ref = factory.clone();
+
+        tokio::spawn(async move { process_socket(incoming_socket.0, None, factory_ref).await });
     }
 }
