@@ -41,13 +41,22 @@ impl SimpleQueryHandler for BigQueryProcessor {
                 .await
                 .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
 
-            let column_names = rs.column_names();
+            // Fetch the column names and schema
+            let mut columns = rs
+                .column_names()
+                .into_iter()
+                .map(|name| (*rs.column_index(&name).unwrap(), name))
+                .collect::<Vec<(usize, String)>>();
+
+            columns.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let n_columns = columns.len();
 
             let schema = Arc::new(
-                column_names
-                    .iter()
-                    .map(|c| {
-                        FieldInfo::new(c.clone(), None, None, Type::VARCHAR, FieldFormat::Text)
+                columns
+                    .into_iter()
+                    .map(|(_, name)| {
+                        FieldInfo::new(name, None, None, Type::VARCHAR, FieldFormat::Text)
                     })
                     .collect::<Vec<_>>(),
             );
@@ -55,9 +64,9 @@ impl SimpleQueryHandler for BigQueryProcessor {
             let mut results = Vec::with_capacity(rs.row_count());
             while rs.next_row() {
                 let mut encoder = DataRowEncoder::new(schema.clone());
-                for name in column_names.iter() {
+                for index in 0..n_columns {
                     let v = rs
-                        .get_string_by_name(name)
+                        .get_string(index)
                         .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
                     encoder.encode_field(&v)?;
                 }
